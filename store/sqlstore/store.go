@@ -911,15 +911,27 @@ func (s *SQLStore) DeleteOldBufferedHashes(ctx context.Context) error {
 
 const (
 	insertWebSocketErrorQuery = `
-		INSERT INTO whatsmeow_websocket_errors (client_jid, error_msg, timestamp)
-		VALUES ($1, $2, $3)
+		INSERT INTO whatsmeow_websocket_errors (client_jid, error_msg, timestamp, processed)
+		VALUES ($1, $2, $3, $4)
 	`
 	getWebSocketErrorsQuery = `
-		SELECT id, client_jid, error_msg, timestamp, created_at
+		SELECT id, client_jid, error_msg, timestamp, processed, created_at
 		FROM whatsmeow_websocket_errors
 		WHERE client_jid = $1
 		ORDER BY timestamp DESC
 		LIMIT $2
+	`
+	getUnprocessedWebSocketErrorsQuery = `
+		SELECT id, client_jid, error_msg, timestamp, processed, created_at
+		FROM whatsmeow_websocket_errors
+		WHERE processed = FALSE
+		ORDER BY timestamp ASC
+		LIMIT $1
+	`
+	markWebSocketErrorProcessedQuery = `
+		UPDATE whatsmeow_websocket_errors
+		SET processed = TRUE
+		WHERE id = $1
 	`
 	deleteOldWebSocketErrorsQuery = `
 		DELETE FROM whatsmeow_websocket_errors
@@ -929,7 +941,7 @@ const (
 
 // LogWebSocketError logs a websocket error to the database
 func (s *SQLStore) LogWebSocketError(ctx context.Context, clientJID string, errorMsg string) error {
-	_, err := s.db.Exec(ctx, insertWebSocketErrorQuery, clientJID, errorMsg, time.Now().Unix())
+	_, err := s.db.Exec(ctx, insertWebSocketErrorQuery, clientJID, errorMsg, time.Now().Unix(), false)
 	return err
 }
 
@@ -944,13 +956,39 @@ func (s *SQLStore) GetWebSocketErrors(ctx context.Context, clientJID string, lim
 	var errors []WebSocketError
 	for rows.Next() {
 		var wsError WebSocketError
-		err := rows.Scan(&wsError.ID, &wsError.ClientJID, &wsError.ErrorMsg, &wsError.Timestamp, &wsError.CreatedAt)
+		err := rows.Scan(&wsError.ID, &wsError.ClientJID, &wsError.ErrorMsg, &wsError.Timestamp, &wsError.Processed, &wsError.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
 		errors = append(errors, wsError)
 	}
 	return errors, rows.Err()
+}
+
+// GetUnprocessedWebSocketErrors retrieves unprocessed websocket errors
+func (s *SQLStore) GetUnprocessedWebSocketErrors(ctx context.Context, limit int) ([]WebSocketError, error) {
+	rows, err := s.db.Query(ctx, getUnprocessedWebSocketErrorsQuery, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var errors []WebSocketError
+	for rows.Next() {
+		var wsError WebSocketError
+		err := rows.Scan(&wsError.ID, &wsError.ClientJID, &wsError.ErrorMsg, &wsError.Timestamp, &wsError.Processed, &wsError.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		errors = append(errors, wsError)
+	}
+	return errors, rows.Err()
+}
+
+// MarkWebSocketErrorProcessed marks a websocket error as processed
+func (s *SQLStore) MarkWebSocketErrorProcessed(ctx context.Context, errorID int64) error {
+	_, err := s.db.Exec(ctx, markWebSocketErrorProcessedQuery, errorID)
+	return err
 }
 
 // DeleteOldWebSocketErrors deletes websocket errors older than the specified time
@@ -965,5 +1003,6 @@ type WebSocketError struct {
 	ClientJID string    `json:"client_jid"`
 	ErrorMsg  string    `json:"error_msg"`
 	Timestamp int64     `json:"timestamp"`
+	Processed bool      `json:"processed"`
 	CreatedAt time.Time `json:"created_at"`
 }

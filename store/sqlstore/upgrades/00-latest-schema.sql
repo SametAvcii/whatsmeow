@@ -159,8 +159,10 @@ CREATE TABLE whatsmeow_websocket_errors (
 	client_jid   TEXT NOT NULL,
 	error_msg    TEXT NOT NULL,
 	timestamp    BIGINT NOT NULL,
+	processed    BOOLEAN NOT NULL DEFAULT FALSE,
 	created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_whatsmeow_websocket_errors_client_jid ON whatsmeow_websocket_errors(client_jid);
 CREATE INDEX idx_whatsmeow_websocket_errors_timestamp ON whatsmeow_websocket_errors(timestamp);
+CREATE INDEX idx_whatsmeow_websocket_errors_processed ON whatsmeow_websocket_errors(processed);
