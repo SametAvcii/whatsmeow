@@ -616,31 +616,6 @@ func (cli *Client) IsConnected() bool {
 	return connected
 }
 
-// IsWebSocketHealthy checks if the websocket connection is actually healthy
-// This goes beyond IsConnected() by testing if the websocket can actually send/receive data
-func (cli *Client) IsWebSocketHealthy() bool {
-	if cli == nil {
-		return false
-	}
-	cli.socketLock.RLock()
-	defer cli.socketLock.RUnlock()
-	return cli.socket != nil && cli.socket.IsWebSocketHealthy()
-}
-
-// PingWebSocket sends a ping to test websocket health
-// Returns error if websocket is not connected or ping fails
-func (cli *Client) PingWebSocket() error {
-	if cli == nil {
-		return ErrClientIsNil
-	}
-	cli.socketLock.RLock()
-	defer cli.socketLock.RUnlock()
-	if cli.socket == nil {
-		return ErrNotConnected
-	}
-	return cli.socket.PingWebSocket()
-}
-
 // Disconnect disconnects from the WhatsApp web websocket.
 //
 // This will not emit any events, the Disconnected event is only used when the

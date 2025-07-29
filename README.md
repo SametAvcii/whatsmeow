@@ -28,53 +28,6 @@ Most core features are already present:
 * Reading and writing app state (contact list, chat pin/mute status, etc)
 * Sending and handling retry receipts if message decryption fails
 * Sending status messages (experimental, may not work for large contact lists)
-* **Presence monitoring with optimized websocket connection handling**
-
-## Presence Optimization
-
-For applications that primarily monitor presence status (online/offline), whatsmeow includes optimized connection handling to reduce websocket errors and improve reliability:
-
-### Features
-* Reduced logging of abnormal closure errors (1006) that are common with presence-only usage
-* Optimized keepalive intervals for presence monitoring
-* Enhanced websocket connection stability with ping/pong handlers
-* **Real websocket health checking** - goes beyond basic connection status
-* Faster reconnection for presence-focused applications
-* Dedicated presence event handling
-
-### Usage
-```go
-// Configure for presence-optimized usage
-config := &whatsmeow.PresenceOptimizedConfig{
-    Enabled:                     true,
-    KeepAliveInterval:          60 * time.Second,
-    IgnoreAbnormalClosureErrors: true,
-}
-
-// Connect with optimization
-client.ConnectForPresence(config)
-
-// Subscribe to presence with error handling
-client.SubscribePresenceOptimized(jid)
-
-// Handle presence events
-client.HandlePresenceEvents(func(presence *events.Presence) {
-    fmt.Printf("%s is %s\n", presence.From,
-        map[bool]string{true: "offline", false: "online"}[presence.Unavailable])
-})
-
-// Check websocket health (beyond basic connection status)
-if client.IsConnected() {
-    if healthy, err := client.CheckWebSocketHealth(); err != nil {
-        fmt.Printf("Health check failed: %v\n", err)
-    } else if !healthy {
-        fmt.Println("WebSocket is connected but unhealthy")
-        // Will trigger automatic reconnection
-    }
-}
-```
-
-See `examples/presence_optimized_example.go` for a complete example.
 
 Things that are not yet implemented:
 
