@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,11 @@ type FrameSocket struct {
 
 	// Error logging callback
 	OnWebSocketError func(clientJID string, err error)
+
+	// Health check fields
+	lastPingTime     time.Time
+	lastPongTime     time.Time
+	healthCheckMutex sync.RWMutex
 }
 
 func NewFrameSocket(log waLog.Logger, dialer websocket.Dialer) *FrameSocket {
@@ -68,6 +74,45 @@ func NewFrameSocket(log waLog.Logger, dialer websocket.Dialer) *FrameSocket {
 
 func (fs *FrameSocket) IsConnected() bool {
 	return fs.conn != nil
+}
+
+// IsWebSocketHealthy checks if the websocket connection is actually healthy
+func (fs *FrameSocket) IsWebSocketHealthy() bool {
+	if fs.conn == nil {
+		return false
+	}
+
+	fs.healthCheckMutex.RLock()
+	defer fs.healthCheckMutex.RUnlock()
+
+	// If we never sent a ping, consider it healthy (newly connected)
+	if fs.lastPingTime.IsZero() {
+		return true
+	}
+
+	// If we sent a ping but never got a pong, check timeout
+	if fs.lastPongTime.Before(fs.lastPingTime) {
+		// If ping was sent more than 15 seconds ago without pong, consider unhealthy
+		if time.Since(fs.lastPingTime) > 15*time.Second {
+			return false
+		}
+	}
+
+	return true
+}
+
+// PingWebSocket sends a ping to test websocket health
+func (fs *FrameSocket) PingWebSocket() error {
+	if fs.conn == nil {
+		return ErrSocketClosed
+	}
+
+	fs.healthCheckMutex.Lock()
+	fs.lastPingTime = time.Now()
+	fs.healthCheckMutex.Unlock()
+
+	fs.log.Debugf("Sending websocket ping for health check")
+	return fs.conn.WriteControl(websocket.PingMessage, []byte("health-check"), time.Now().Add(5*time.Second))
 }
 
 func (fs *FrameSocket) Context() context.Context {
@@ -112,6 +157,17 @@ func (fs *FrameSocket) Connect() error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Configure dialer for better reliability
+	if fs.Dialer.HandshakeTimeout == 0 {
+		fs.Dialer.HandshakeTimeout = 30 * time.Second
+	}
+	if fs.Dialer.ReadBufferSize == 0 {
+		fs.Dialer.ReadBufferSize = 4096
+	}
+	if fs.Dialer.WriteBufferSize == 0 {
+		fs.Dialer.WriteBufferSize = 4096
+	}
+
 	fs.log.Debugf("Dialing %s", fs.URL)
 	conn, _, err := fs.Dialer.Dial(fs.URL, fs.HTTPHeaders)
 	if err != nil {
@@ -145,6 +201,17 @@ func (fs *FrameSocket) ConnectWithClientJID(clientJID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Add client JID to context
 	ctx = context.WithValue(ctx, ClientJIDKey, clientJID)
+
+	// Configure dialer for better reliability
+	if fs.Dialer.HandshakeTimeout == 0 {
+		fs.Dialer.HandshakeTimeout = 30 * time.Second
+	}
+	if fs.Dialer.ReadBufferSize == 0 {
+		fs.Dialer.ReadBufferSize = 4096
+	}
+	if fs.Dialer.WriteBufferSize == 0 {
+		fs.Dialer.WriteBufferSize = 4096
+	}
 
 	fs.log.Debugf("Dialing %s", fs.URL)
 	conn, _, err := fs.Dialer.Dial(fs.URL, fs.HTTPHeaders)
@@ -262,18 +329,54 @@ func (fs *FrameSocket) readPump(conn *websocket.Conn, ctx context.Context) {
 		fs.log.Debugf("Frame websocket read pump exiting %p", fs)
 		go fs.Close(0)
 	}()
+
+	// Set up ping/pong handlers for better connection health
+	conn.SetPingHandler(func(appData string) error {
+		fs.log.Debugf("Received ping, sending pong")
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
+	})
+
+	conn.SetPongHandler(func(appData string) error {
+		fs.log.Debugf("Received pong")
+		// Update last pong time for health tracking
+		fs.healthCheckMutex.Lock()
+		fs.lastPongTime = time.Now()
+		fs.healthCheckMutex.Unlock()
+		return nil
+	})
+
 	for {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
-			// Ignore the error if the context has been closed
-			if !errors.Is(ctx.Err(), context.Canceled) {
-				fs.log.Errorf("Error reading from websocket: %v", err)
+			// Check if it's a normal close or expected error
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				fs.log.Debugf("Websocket closed normally: %v", err)
+				return
+			}
 
-				// Log error to database if callback is set and client JID is available
-				if fs.OnWebSocketError != nil {
-					if clientJID, ok := ctx.Value(ClientJIDKey).(string); ok && clientJID != "" {
-						fs.OnWebSocketError(clientJID, err)
-					}
+			// Check if context was cancelled (expected disconnect)
+			if errors.Is(ctx.Err(), context.Canceled) {
+				fs.log.Debugf("Websocket read cancelled due to context cancellation")
+				return
+			}
+
+			// For 1006 errors (abnormal closure), log at debug level instead of error
+			// since these are often network-related and will trigger auto-reconnect
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				if strings.Contains(err.Error(), "1006") {
+					fs.log.Debugf("Websocket abnormal closure (will auto-reconnect): %v", err)
+				} else {
+					fs.log.Warnf("Unexpected websocket close: %v", err)
+				}
+			} else {
+				fs.log.Errorf("Error reading from websocket: %v", err)
+			}
+
+			// Log error to database if callback is set and client JID is available
+			// Log all errors including 1006 to database for tracking
+			if fs.OnWebSocketError != nil {
+				if clientJID, ok := ctx.Value(ClientJIDKey).(string); ok && clientJID != "" {
+					fs.OnWebSocketError(clientJID, err)
 				}
 			}
 			return

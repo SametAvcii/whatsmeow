@@ -106,3 +106,13 @@ func (ns *NoiseSocket) receiveEncryptedFrame(ciphertext []byte) {
 func (ns *NoiseSocket) IsConnected() bool {
 	return ns.fs.IsConnected()
 }
+
+// IsWebSocketHealthy checks if the underlying websocket is healthy
+func (ns *NoiseSocket) IsWebSocketHealthy() bool {
+	return ns.fs.IsWebSocketHealthy()
+}
+
+// PingWebSocket sends a ping to test websocket health
+func (ns *NoiseSocket) PingWebSocket() error {
+	return ns.fs.PingWebSocket()
+}
